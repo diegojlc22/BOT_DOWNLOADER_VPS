@@ -236,13 +236,12 @@ async def download_handler(client, message: Message, custom_name=None, url=None)
                     raise e
 
                 total_size = os.path.getsize(file_path)
-                # HEADER OTIMIZADO PARA VPS (Disfarce de Browser)
+                # HEADER OTIMIZADO PARA VPS (Disfarce de Browser Genérico)
                 custom_headers = {
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                     "Accept": "*/*",
-                    "Accept-Encoding": "identity;q=1.0, *;q=0.8", # Força não-gzip para vídeos
-                    "Connection": "keep-alive",
-                    "Referer": "https://www.google.com/"
+                    "Accept-Encoding": "identity;q=1.0, *;q=0.8",
+                    "Connection": "keep-alive"
                 }
 
                 try:
@@ -268,6 +267,12 @@ async def download_handler(client, message: Message, custom_name=None, url=None)
                             
                             async with session.get(url, headers=custom_headers, timeout=timeout) as resp:
                                 if resp.status != 200: raise Exception(f"HTTP {resp.status}")
+                                
+                                # Validação Anti-Bloqueio
+                                ctype = resp.headers.get("Content-Type", "").lower()
+                                if "text/html" in ctype:
+                                    logger.error(f"Servidor retornou HTML em vez de vídeo. Content-Type: {ctype}")
+                                    raise Exception("Link inválido ou expirado (Retornou HTML)")
                                 
                                 with open(file_path, "wb") as f:
                                     # BUFFER AGRESSIVO: 8MB para reduzir I/O e manter fluxo
