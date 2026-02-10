@@ -310,24 +310,24 @@ async def download_handler(client, message: Message, custom_name=None, url=None)
         await msg.edit_text("📤 <b>Download 100%! Enviando...</b>", parse_mode=enums.ParseMode.HTML, reply_markup=cancel_btn)
         caption = f"🎬 <b>Arquivo:</b> <code>{filename}</code>\n📦 <b>Tamanho:</b> {format_bytes(total_size)}"
         
+        if message.chat.id == ARCHIVE_CHAT_ID:
+            chat_destino = message.chat.id
+        else:
+            chat_destino = ARCHIVE_CHAT_ID
+
         await client.send_video(
-            chat_id=message.chat.id,
+            chat_id=chat_destino,
             video=file_path,
-            caption=caption,
+            caption=f"{caption}\n👤 <b>Pedido por:</b> {message.from_user.mention if message.from_user else 'User'}",
             supports_streaming=True,
             progress=progress_callback,
-            progress_args=(msg, "Enviando", time.time(), cancel_btn)
+            progress_args=(msg, "Enviando para Arquivo", time.time(), cancel_btn)
         )
         
-        try:
-            await client.send_video(
-                chat_id=ARCHIVE_CHAT_ID,
-                video=file_path,
-                caption=f"{caption}\n👤 <b>Pedido por:</b> {message.from_user.mention if message.from_user else 'User'}",
-                supports_streaming=True
-            )
-        except Exception as e:
-            logger.warning(f"Falha ao enviar para arquivo: {e}")
+        if message.chat.id != ARCHIVE_CHAT_ID:
+            await msg.edit_text(f"✅ <b>Upload Concluído!</b>\nO arquivo foi enviado para o canal de arquivo.\n\n� <b>Arquivo:</b> <code>{filename}</code>", parse_mode=enums.ParseMode.HTML)
+        else:
+            await msg.delete()
         
         await msg.delete()
         
