@@ -229,87 +229,39 @@ async def download_handler(client, message: Message, custom_name=None, url=None)
                             if chunk:
                                 f.write(chunk)
                 total_size = os.path.getsize(file_path)
-            else:
                 try:
                     await msg.edit_text(
-                        f"⏳ <b>Baixando (Turbo Quad-Engine):</b>\n<code>{filename}</code>{expiration_info}",
-                        parse_mode=enums.ParseMode.HTML,
-                        reply_markup=cancel_btn
-                    )
-                    
-                    num_parts = 8 
-                    semaphore_limit = 4 
-                    
-                    chunk_size = total_size // num_parts
-                    progress_dict = [0] * num_parts
-                    semaphore = asyncio.Semaphore(semaphore_limit)
-                    
-                    with open(file_path, "wb") as f: f.truncate(total_size)
-                    
-                    tasks = []
-                    for i in range(num_parts):
-                        start = i * chunk_size
-                        end = (i + 1) * chunk_size - 1 if i < num_parts - 1 else total_size - 1
-                        task = asyncio.create_task(download_worker(
-                            session, url,
-                            start, end,
-                            file_path, semaphore, progress_dict, i
-                        ))
-                        tasks.append(task)
-                        await asyncio.sleep(0.2) # Ramp-up suave
-                    
-                    monitor = True
-                    async def monitor_speed():
-                        while monitor:
-                            if active_downloads.get(msg.id, {}).get("cancel"):
-                                return
-                            await progress_callback(sum(progress_dict), total_size, msg, "Baixando", start_time, cancel_btn)
-                            await asyncio.sleep(1.5)
-                    
-                    m_task = asyncio.create_task(monitor_speed())
-                    
-                    try:
-                        pending = set(tasks)
-                        while pending:
-                            done, pending = await asyncio.wait(pending, timeout=1.0, return_when=asyncio.FIRST_COMPLETED)
-                            if active_downloads.get(msg.id, {}).get("cancel"):
-                                for task in pending: task.cancel()
-                                monitor = False
-                                raise Exception("Download cancelado pelo usuário")
-                            for task in done:
-                                if task.exception():
-                                    monitor = False
-                                    raise task.exception()
-
-                    except asyncio.CancelledError:
-                        raise Exception("Download cancelado")
-                    
-                    monitor = False
-                    await m_task
-                    
-                except Exception as parallel_error:
-                    monitor = False
-                    for task in tasks: task.cancel() # Cancela pendentes
-                    await asyncio.wait(tasks, timeout=2) # Espera limpeza
-                    
-                    logger.warning(f"Download turbo falhou: {parallel_error}. Tentando modo seguro...")
-                    await msg.edit_text(
-                        f"⏳ <b>Baixando (Modo Seguro):</b>\n<code>{filename}</code>{expiration_info}\n\n⚠️ Servidor instável, usando 1 conexão.",
+                        f"⏳ <b>Baixando (Estável):</b>\n<code>{filename}</code>{expiration_info}\n\n⚠️ Modo Compatibilidade VPS ativado.",
                         parse_mode=enums.ParseMode.HTML,
                         reply_markup=cancel_btn
                     )
                     
                     downloaded = 0
+                    start_time = time.time()
+                    last_update_time = 0
+                    
                     with open(file_path, "wb") as f:
+                        # Timeout maior para evitar quedas em arquivos grandes
                         async with session.get(url, timeout=300) as resp:
-                            async for chunk in resp.content.iter_chunked(1024 * 1024):
+                            if resp.status != 200:
+                                raise Exception(f"HTTP {resp.status}")
+                                
+                            async for chunk in resp.content.iter_chunked(1024 * 1024): # 1MB chunks
                                 if active_downloads.get(msg.id, {}).get("cancel"):
-                                    raise Exception("Cancelado")
+                                    raise Exception("Download cancelado pelo usuário")
                                 if chunk:
                                     f.write(chunk)
                                     downloaded += len(chunk)
-                                    if downloaded % (5 * 1024 * 1024) == 0: 
-                                        await progress_callback(downloaded, total_size, msg, "Baixando (Seguro)", start_time, cancel_btn)
+                                    
+                                    # Atualiza visual a cada 2s para não floodar API
+                                    now = time.time()
+                                    if now - last_update_time >= 2:
+                                        await progress_callback(downloaded, total_size, msg, "Baixando", start_time, cancel_btn)
+                                        last_update_time = now
+
+                except Exception as e:
+                    logger.error(f"Erro no download linear: {e}")
+                    raise e
 
 
         if total_size > 0 and os.path.exists(file_path) and os.path.getsize(file_path) == 0:
