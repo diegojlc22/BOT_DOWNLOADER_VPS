@@ -208,6 +208,8 @@ async def download_handler(client, message: Message, custom_name=None, url=None)
                 else:
                     filename = custom_name if custom_name.endswith(".mp4") else f"{custom_name}.mp4"
             
+            # Sanitiza nome do arquivo para evitar erros de path no Linux/Windows
+            filename = re.sub(r'[\\/*?:"<>|]', "", filename)
             file_path = os.path.join(DOWNLOAD_DIR, filename)
             
             cancel_btn = InlineKeyboardMarkup([[
@@ -221,14 +223,20 @@ async def download_handler(client, message: Message, custom_name=None, url=None)
                     parse_mode=enums.ParseMode.HTML,
                     reply_markup=cancel_btn
                 )
-                async with session.get(url, timeout=120) as resp:
-                    with open(file_path, "wb") as f:
-                        async for chunk in resp.content.iter_chunked(1024 * 1024):
-                            if active_downloads.get(msg.id, {}).get("cancel"):
-                                raise Exception("Download cancelado pelo usuário")
-                            if chunk:
-                                f.write(chunk)
+                try:
+                    async with session.get(url, timeout=120) as resp:
+                        with open(file_path, "wb") as f:
+                            async for chunk in resp.content.iter_chunked(1024 * 1024):
+                                if active_downloads.get(msg.id, {}).get("cancel"):
+                                    raise Exception("Download cancelado pelo usuário")
+                                if chunk:
+                                    f.write(chunk)
+                except Exception as e:
+                    logger.error(f"Erro no download contínuo: {e}")
+                    raise e
+
                 total_size = os.path.getsize(file_path)
+            else:
                 try:
                     await msg.edit_text(
                         f"⏳ <b>Baixando (Estável):</b>\n<code>{filename}</code>{expiration_info}\n\n⚠️ Modo Compatibilidade VPS ativado.",
@@ -243,24 +251,31 @@ async def download_handler(client, message: Message, custom_name=None, url=None)
                     # Garante que a pasta existe
                     os.makedirs(os.path.dirname(file_path), exist_ok=True)
                     
-                    with open(file_path, "wb") as f:
-                        # Timeout maior para evitar quedas em arquivos grandes
-                        async with session.get(url, timeout=300) as resp:
-                            if resp.status != 200:
-                                raise Exception(f"HTTP {resp.status}")
-                                
-                            async for chunk in resp.content.iter_chunked(1024 * 1024): # 1MB chunks
-                                if active_downloads.get(msg.id, {}).get("cancel"):
-                                    raise Exception("Download cancelado pelo usuário")
-                                if chunk:
-                                    f.write(chunk)
-                                    downloaded += len(chunk)
+                    try:
+                        with open(file_path, "wb") as f:
+                            # Timeout maior para evitar quedas em arquivos grandes
+                            async with session.get(url, timeout=300) as resp:
+                                if resp.status != 200:
+                                    raise Exception(f"HTTP {resp.status}")
                                     
-                                    # Atualiza visual a cada 2s para não floodar API
-                                    now = time.time()
-                                    if now - last_update_time >= 2:
-                                        await progress_callback(downloaded, total_size, msg, "Baixando", start_time, cancel_btn)
-                                        last_update_time = now
+                                async for chunk in resp.content.iter_chunked(1024 * 1024): # 1MB chunks
+                                    if active_downloads.get(msg.id, {}).get("cancel"):
+                                        raise Exception("Download cancelado pelo usuário")
+                                    if chunk:
+                                        f.write(chunk)
+                                        downloaded += len(chunk)
+                                        
+                                        # Atualiza visual a cada 2s para não floodar API
+                                        now = time.time()
+                                        if now - last_update_time >= 2:
+                                            await progress_callback(downloaded, total_size, msg, "Baixando", start_time, cancel_btn)
+                                            last_update_time = now
+                    except IOError as io_err:
+                        logger.error(f"Erro de Disco ao salvar {file_path}: {io_err}")
+                        raise Exception(f"Erro de Disco: {io_err}")
+                    except Exception as net_err:
+                        logger.error(f"Erro de Rede ao baixar {url}: {net_err}")
+                        raise net_err
 
                 except Exception as e:
                     logger.error(f"Erro no download linear: {e}")
