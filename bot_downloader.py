@@ -236,96 +236,66 @@ async def download_handler(client, message: Message, custom_name=None, url=None)
                     raise e
 
                 total_size = os.path.getsize(file_path)
-            else:
+                # HEADER OTIMIZADO PARA VPS (Disfarce de Browser)
+                custom_headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "Accept": "*/*",
+                    "Accept-Encoding": "identity;q=1.0, *;q=0.8", # Força não-gzip para vídeos
+                    "Connection": "keep-alive",
+                    "Referer": "https://www.google.com/"
+                }
+
                 try:
                     await msg.edit_text(
-                        f"⏳ <b>Baixando (Dual-Engine):</b>\n<code>{filename}</code>{expiration_info}",
+                        f"⏳ <b>Baixando (Otimizado VPS):</b>\n<code>{filename}</code>{expiration_info}\n\n⚠️ Modo Linear Agressivo (Buffer 8MB)",
                         parse_mode=enums.ParseMode.HTML,
                         reply_markup=cancel_btn
                     )
-                    
-                    # DUAL ENGINE: 2 Conexões simultâneas (Equilíbrio Vps)
-                    num_parts = 4
-                    semaphore_limit = 2 
-                    
-                    chunk_size = total_size // num_parts
-                    progress_dict = [0] * num_parts
-                    semaphore = asyncio.Semaphore(semaphore_limit)
                     
                     # Garante que a pasta existe e prepara arquivo
                     os.makedirs(os.path.dirname(file_path), exist_ok=True)
-                    with open(file_path, "wb") as f: f.truncate(total_size)
                     
-                    tasks = []
-                    for i in range(num_parts):
-                        start = i * chunk_size
-                        end = (i + 1) * chunk_size - 1 if i < num_parts - 1 else total_size - 1
-                        task = asyncio.create_task(download_worker(
-                            session, url,
-                            start, end,
-                            file_path, semaphore, progress_dict, i
-                        ))
-                        tasks.append(task)
-                        await asyncio.sleep(0.1) # Pequeno delay pra não estourar
+                    max_retries = 3
+                    success = False
                     
-                    monitor = True
-                    async def monitor_speed():
-                        while monitor:
-                            if active_downloads.get(msg.id, {}).get("cancel"):
-                                return
-                            await progress_callback(sum(progress_dict), total_size, msg, "Baixando", start_time, cancel_btn)
-                            await asyncio.sleep(1.5)
+                    for attempt in range(max_retries):
+                        try:
+                            start_time = time.time()
+                            last_update_time = 0
+                            downloaded = 0
+                            
+                            timeout = aiohttp.ClientTimeout(total=None, connect=60, sock_read=300)
+                            
+                            async with session.get(url, headers=custom_headers, timeout=timeout) as resp:
+                                if resp.status != 200: raise Exception(f"HTTP {resp.status}")
+                                
+                                with open(file_path, "wb") as f:
+                                    # BUFFER AGRESSIVO: 8MB para reduzir I/O e manter fluxo
+                                    async for chunk in resp.content.iter_chunked(8 * 1024 * 1024):
+                                        if active_downloads.get(msg.id, {}).get("cancel"):
+                                            raise Exception("Download cancelado pelo usuário")
+                                        if chunk:
+                                            f.write(chunk)
+                                            downloaded += len(chunk)
+                                            
+                                            now = time.time()
+                                            if now - last_update_time >= 2:
+                                                await progress_callback(downloaded, total_size, msg, "Baixando", start_time, cancel_btn)
+                                                last_update_time = now
+                            success = True
+                            break # Sai do loop de tentativas se der certo
+                            
+                        except Exception as e:
+                            logger.warning(f"Tentativa {attempt+1}/{max_retries} falhou: {e}")
+                            if "cancelado" in str(e): raise e
+                            await asyncio.sleep(5) # Espera antes de tentar de novo
                     
-                    m_task = asyncio.create_task(monitor_speed())
-                    
-                    try:
-                        pending = set(tasks)
-                        while pending:
-                            done, pending = await asyncio.wait(pending, timeout=1.0, return_when=asyncio.FIRST_COMPLETED)
-                            if active_downloads.get(msg.id, {}).get("cancel"):
-                                for task in pending: task.cancel()
-                                monitor = False
-                                raise Exception("Download cancelado pelo usuário")
-                            for task in done:
-                                if task.exception():
-                                    monitor = False
-                                    raise task.exception()
-
-                    except asyncio.CancelledError:
-                        raise Exception("Download cancelado")
-                    
-                    monitor = False
-                    await m_task
-                    
-                except Exception as parallel_error:
-                    monitor = False
-                    for task in tasks: task.cancel() # Cancela pendentes
-                    await asyncio.wait(tasks, timeout=2) # Espera limpeza
-                    
-                    logger.warning(f"Download dual falhou: {parallel_error}. Tentando modo seguro...")
-                    await msg.edit_text(
-                        f"⏳ <b>Baixando (Modo Seguro):</b>\n<code>{filename}</code>{expiration_info}\n\n⚠️ Servidor instável, usando 1 conexão.",
-                        parse_mode=enums.ParseMode.HTML,
-                        reply_markup=cancel_btn
-                    )
-                    
-                    downloaded = 0
-                    start_time = time.time()
-                    last_update_time = 0
-                    
-                    with open(file_path, "wb") as f:
-                        async with session.get(url, timeout=300) as resp:
-                            if resp.status != 200: raise Exception(f"HTTP {resp.status}")
-                            async for chunk in resp.content.iter_chunked(1024 * 1024):
-                                if active_downloads.get(msg.id, {}).get("cancel"):
-                                    raise Exception("Cancelado")
-                                if chunk:
-                                    f.write(chunk)
-                                    downloaded += len(chunk)
-                                    now = time.time()
-                                    if now - last_update_time >= 2:
-                                        await progress_callback(downloaded, total_size, msg, "Baixando (Seguro)", start_time, cancel_btn)
-                                        last_update_time = now
+                    if not success:
+                        raise Exception("Falha após 3 tentativas no modo linear.")
+                        
+                except Exception as linear_error:
+                    logger.error(f"Erro Final Download: {linear_error}")
+                    raise linear_error
 
 
         if not os.path.exists(file_path):
