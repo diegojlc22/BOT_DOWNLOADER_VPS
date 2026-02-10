@@ -239,58 +239,98 @@ async def download_handler(client, message: Message, custom_name=None, url=None)
 
                 total_size = os.path.getsize(file_path)
             else:
+                # ESTRATÉGIA: DUAL INTERLEAVED (Chunks alternados para enganar throttling)
+                async def interleaved_worker(worker_id, num_workers, chunk_size, file_path, url, progress_dict):
+                    """Baixa chunks alternados (worker 0: 0,2,4,6... | worker 1: 1,3,5,7...)"""
+                    chunk_index = worker_id
+                    total_chunks = (total_size + chunk_size - 1) // chunk_size
+                    
+                    # Cada worker tem sua própria sessão para evitar conflito
+                    connector = aiohttp.TCPConnector(limit=1, ttl_dns_cache=300, ssl=False)
+                    async with aiohttp.ClientSession(headers=HEADERS, connector=connector) as worker_session:
+                        while chunk_index < total_chunks:
+                            if active_downloads.get(msg.id, {}).get("cancel"):
+                                return
+                            
+                            start = chunk_index * chunk_size
+                            end = min(start + chunk_size - 1, total_size - 1)
+                            
+                            for attempt in range(3):
+                                try:
+                                    headers = {"Range": f"bytes={start}-{end}"}
+                                    async with worker_session.get(url, headers=headers, timeout=120) as resp:
+                                        if resp.status not in [200, 206]:
+                                            raise Exception(f"HTTP {resp.status}")
+                                        
+                                        chunk_data = await resp.read()
+                                        
+                                        # Escreve no arquivo
+                                        with open(file_path, "r+b") as f:
+                                            f.seek(start)
+                                            f.write(chunk_data)
+                                        
+                                        progress_dict[worker_id] += len(chunk_data)
+                                        break
+                                except Exception as e:
+                                    logger.warning(f"Worker {worker_id} chunk {chunk_index} falhou (tentativa {attempt+1}): {e}")
+                                    if attempt == 2: raise e
+                                    await asyncio.sleep(2)
+                            
+                            chunk_index += num_workers
+                            await asyncio.sleep(0.3)  # Delay entre chunks para não estourar
+
                 try:
                     await msg.edit_text(
-                        f"⏳ <b>Baixando (Raw Stream):</b>\n<code>{filename}</code>{expiration_info}\n\n⚠️ Modo Compatibilidade VPS (Sem Header)",
+                        f"⏳ <b>Baixando (Dual Interleaved):</b>\n<code>{filename}</code>{expiration_info}\n\n🔀 2 Workers alternados (Anti-Throttle)",
                         parse_mode=enums.ParseMode.HTML,
                         reply_markup=cancel_btn
                     )
                     
-                    # Garante que a pasta existe e prepara arquivo
                     os.makedirs(os.path.dirname(file_path), exist_ok=True)
                     
-                    max_retries = 3
-                    success = False
+                    # Pré-aloca o arquivo
+                    with open(file_path, "wb") as f:
+                        f.truncate(total_size)
                     
-                    for attempt in range(max_retries):
-                        try:
-                            start_time = time.time()
-                            last_update_time = 0
-                            downloaded = 0
-                            
-                            timeout = aiohttp.ClientTimeout(total=None, connect=60, sock_read=300)
-                            
-                            # REMOVIDO HEADERS FAKE -> USANDO PADRAO DO AIOHTTP
-                            async with session.get(url, timeout=timeout) as resp:
-                                if resp.status != 200: raise Exception(f"HTTP {resp.status}")
-                                
-                                with open(file_path, "wb") as f:
-                                    # BUFFER PADRÃO 1MB (Mais seguro)
-                                    async for chunk in resp.content.iter_chunked(1024 * 1024):
-                                        if active_downloads.get(msg.id, {}).get("cancel"):
-                                            raise Exception("Download cancelado pelo usuário")
-                                        if chunk:
-                                            f.write(chunk)
-                                            downloaded += len(chunk)
-                                            
-                                            now = time.time()
-                                            if now - last_update_time >= 2:
-                                                await progress_callback(downloaded, total_size, msg, "Baixando", start_time, cancel_btn)
-                                                last_update_time = now
-                            success = True
-                            break # Sai do loop de tentativas se der certo
-                            
-                        except Exception as e:
-                            logger.warning(f"Tentativa {attempt+1}/{max_retries} falhou: {e}")
-                            if "cancelado" in str(e): raise e
-                            await asyncio.sleep(5) # Espera antes de tentar de novo
+                    num_workers = 2
+                    chunk_size = 8 * 1024 * 1024  # 8MB por chunk
+                    progress_dict = [0, 0]
                     
-                    if not success:
-                        raise Exception("Falha após 3 tentativas no modo linear.")
-                        
-                except Exception as linear_error:
-                    logger.error(f"Erro Final Download: {linear_error}")
-                    raise linear_error
+                    # Cria os workers
+                    tasks = []
+                    for worker_id in range(num_workers):
+                        task = asyncio.create_task(
+                            interleaved_worker(worker_id, num_workers, chunk_size, file_path, url, progress_dict)
+                        )
+                        tasks.append(task)
+                        await asyncio.sleep(0.5)  # Delay no start para não sincronizar
+                    
+                    # Monitor de progresso
+                    monitor = True
+                    async def monitor_speed():
+                        while monitor:
+                            if active_downloads.get(msg.id, {}).get("cancel"):
+                                return
+                            await progress_callback(sum(progress_dict), total_size, msg, "Baixando", start_time, cancel_btn)
+                            await asyncio.sleep(1.5)
+                    
+                    m_task = asyncio.create_task(monitor_speed())
+                    
+                    # Aguarda workers
+                    try:
+                        await asyncio.gather(*tasks)
+                    except Exception as e:
+                        monitor = False
+                        for task in tasks:
+                            task.cancel()
+                        raise e
+                    
+                    monitor = False
+                    await m_task
+                    
+                except Exception as interleaved_error:
+                    logger.error(f"Dual Interleaved falhou: {interleaved_error}")
+                    raise interleaved_error
 
 
         if not os.path.exists(file_path):
