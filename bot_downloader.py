@@ -186,7 +186,7 @@ async def download_handler(client, message: Message, custom_name=None, url=None)
     
     try:
         connector = aiohttp.TCPConnector(limit=0, ttl_dns_cache=300)
-        async with aiohttp.ClientSession(headers=HEADERS, connector=connector) as session:
+        async with aiohttp.ClientSession(headers=HEADERS, connector=connector, trust_env=True) as session:
             async with session.head(url, timeout=30) as r:
                 total_size = int(r.headers.get('content-length', 0))
                 
@@ -229,13 +229,13 @@ async def download_handler(client, message: Message, custom_name=None, url=None)
             else:
                 try:
                     await msg.edit_text(
-                        f"⏳ <b>Baixando (Turbo):</b>\n<code>{filename}</code>{expiration_info}",
+                        f"⏳ <b>Baixando (Turbo Quad-Engine):</b>\n<code>{filename}</code>{expiration_info}",
                         parse_mode=enums.ParseMode.HTML,
                         reply_markup=cancel_btn
                     )
                     
                     num_parts = 8 
-                    semaphore_limit = 2 
+                    semaphore_limit = 4 
                     
                     chunk_size = total_size // num_parts
                     progress_dict = [0] * num_parts
@@ -253,6 +253,7 @@ async def download_handler(client, message: Message, custom_name=None, url=None)
                             file_path, semaphore, progress_dict, i
                         ))
                         tasks.append(task)
+                        await asyncio.sleep(0.2) # Ramp-up suave
                     
                     monitor = True
                     async def monitor_speed():
