@@ -188,11 +188,13 @@ async def download_handler(client, message: Message, custom_name=None, url=None)
                 expiration_info = f"\n📅 <b>Expira em {days_left} dias</b> ({expire_date.strftime('%d/%m %H:%M')})"
     
     try:
-        connector = aiohttp.TCPConnector(limit=0, ttl_dns_cache=300)
-        async with aiohttp.ClientSession(headers=HEADERS, connector=connector, trust_env=True) as session:
-            async with session.head(url, timeout=30) as r:
+        # MODO RAW STREAM (Sem headers fake, sem SSL check)
+        connector = aiohttp.TCPConnector(limit=0, ttl_dns_cache=300, ssl=False)
+        async with aiohttp.ClientSession(headers=HEADERS, connector=connector) as session:
+            async with session.head(url, timeout=30, allow_redirects=True) as r:
                 total_size = int(r.headers.get('content-length', 0))
                 
+                # ... (Lógica de nome do arquivo mantida) ...
                 if not custom_name:
                     filename = f"video_{int(time.time())}.mp4"
                     cd = r.headers.get("Content-Disposition")
@@ -208,7 +210,7 @@ async def download_handler(client, message: Message, custom_name=None, url=None)
                 else:
                     filename = custom_name if custom_name.endswith(".mp4") else f"{custom_name}.mp4"
             
-            # Sanitiza nome do arquivo para evitar erros de path no Linux/Windows
+            # Sanitiza nome do arquivo
             filename = re.sub(r'[\\/*?:"<>|]', "", filename)
             file_path = os.path.join(DOWNLOAD_DIR, filename)
             
@@ -236,17 +238,10 @@ async def download_handler(client, message: Message, custom_name=None, url=None)
                     raise e
 
                 total_size = os.path.getsize(file_path)
-                # HEADER OTIMIZADO PARA VPS (Disfarce de Browser Genérico)
-                custom_headers = {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                    "Accept": "*/*",
-                    "Accept-Encoding": "identity;q=1.0, *;q=0.8",
-                    "Connection": "keep-alive"
-                }
-
+            else:
                 try:
                     await msg.edit_text(
-                        f"⏳ <b>Baixando (Otimizado VPS):</b>\n<code>{filename}</code>{expiration_info}\n\n⚠️ Modo Linear Agressivo (Buffer 8MB)",
+                        f"⏳ <b>Baixando (Raw Stream):</b>\n<code>{filename}</code>{expiration_info}\n\n⚠️ Modo Compatibilidade VPS (Sem Header)",
                         parse_mode=enums.ParseMode.HTML,
                         reply_markup=cancel_btn
                     )
@@ -265,18 +260,13 @@ async def download_handler(client, message: Message, custom_name=None, url=None)
                             
                             timeout = aiohttp.ClientTimeout(total=None, connect=60, sock_read=300)
                             
-                            async with session.get(url, headers=custom_headers, timeout=timeout) as resp:
+                            # REMOVIDO HEADERS FAKE -> USANDO PADRAO DO AIOHTTP
+                            async with session.get(url, timeout=timeout) as resp:
                                 if resp.status != 200: raise Exception(f"HTTP {resp.status}")
                                 
-                                # Validação Anti-Bloqueio
-                                ctype = resp.headers.get("Content-Type", "").lower()
-                                if "text/html" in ctype:
-                                    logger.error(f"Servidor retornou HTML em vez de vídeo. Content-Type: {ctype}")
-                                    raise Exception("Link inválido ou expirado (Retornou HTML)")
-                                
                                 with open(file_path, "wb") as f:
-                                    # BUFFER AGRESSIVO: 8MB para reduzir I/O e manter fluxo
-                                    async for chunk in resp.content.iter_chunked(8 * 1024 * 1024):
+                                    # BUFFER PADRÃO 1MB (Mais seguro)
+                                    async for chunk in resp.content.iter_chunked(1024 * 1024):
                                         if active_downloads.get(msg.id, {}).get("cancel"):
                                             raise Exception("Download cancelado pelo usuário")
                                         if chunk:
