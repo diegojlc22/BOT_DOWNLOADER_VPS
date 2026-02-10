@@ -240,6 +240,9 @@ async def download_handler(client, message: Message, custom_name=None, url=None)
                     start_time = time.time()
                     last_update_time = 0
                     
+                    # Garante que a pasta existe
+                    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+                    
                     with open(file_path, "wb") as f:
                         # Timeout maior para evitar quedas em arquivos grandes
                         async with session.get(url, timeout=300) as resp:
