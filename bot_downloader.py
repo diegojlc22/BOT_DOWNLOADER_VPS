@@ -102,25 +102,28 @@ async def progress_callback(current, total, message, action, start_time, cancel_
 
 async def download_worker(session, url, start, end, file_path, semaphore, progress_dict, thread_idx):
     headers = HEADERS.copy()
-    headers["Range"] = f"bytes={start}-{end}"
+    current_start = start
     
     async with semaphore:
         for attempt in range(5):
             try:
+                headers["Range"] = f"bytes={current_start}-{end}"
                 async with session.get(url, headers=headers, timeout=60) as resp:
                     if resp.status not in [200, 206]:
                         raise Exception(f"HTTP {resp.status}")
                     
                     with open(file_path, "r+b") as f:
-                        f.seek(start)
+                        f.seek(current_start)
                         async for chunk in resp.content.iter_chunked(1024 * 1024): # 1MB chunks
                             if chunk:
                                 f.write(chunk)
-                                progress_dict[thread_idx] += len(chunk)
+                                written = len(chunk)
+                                progress_dict[thread_idx] += written
+                                current_start += written
                     return # Sucesso
             except (aiohttp.ClientPayloadError, aiohttp.ClientConnectorError, asyncio.TimeoutError) as e:
-                logger.warning(f"Thread {thread_idx} tentativa {attempt+1}/5 falhou (Rede): {e}")
-                progress_dict[thread_idx] = 0 # Reseta progresso visual desse chunk
+                logger.warning(f"Thread {thread_idx} tentativa {attempt+1}/5 falhou (Payload incompleto/Rede): {e}")
+                # Não zera o progresso, ajusta o Range e tenta de novo
                 await asyncio.sleep(2 * (attempt + 1)) # Backoff exponencial
             except Exception as e:
                 logger.error(f"Thread {thread_idx} erro crítico: {e}")
