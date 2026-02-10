@@ -234,8 +234,8 @@ async def download_handler(client, message: Message, custom_name=None, url=None)
                         reply_markup=cancel_btn
                     )
                     
-                    num_parts = 16 
-                    semaphore_limit = 4 
+                    num_parts = 8 
+                    semaphore_limit = 2 
                     
                     chunk_size = total_size // num_parts
                     progress_dict = [0] * num_parts
@@ -284,6 +284,10 @@ async def download_handler(client, message: Message, custom_name=None, url=None)
                     await m_task
                     
                 except Exception as parallel_error:
+                    monitor = False
+                    for task in tasks: task.cancel() # Cancela pendentes
+                    await asyncio.wait(tasks, timeout=2) # Espera limpeza
+                    
                     logger.warning(f"Download turbo falhou: {parallel_error}. Tentando modo seguro...")
                     await msg.edit_text(
                         f"⏳ <b>Baixando (Modo Seguro):</b>\n<code>{filename}</code>{expiration_info}\n\n⚠️ Servidor instável, usando 1 conexão.",
@@ -303,6 +307,9 @@ async def download_handler(client, message: Message, custom_name=None, url=None)
                                     if downloaded % (5 * 1024 * 1024) == 0: 
                                         await progress_callback(downloaded, total_size, msg, "Baixando (Seguro)", start_time, cancel_btn)
 
+
+        if total_size > 0 and os.path.exists(file_path) and os.path.getsize(file_path) == 0:
+             raise Exception("Erro crítico: Arquivo vazio baixado.")
 
         if os.path.getsize(file_path) < total_size:
             raise Exception("Tamanho do arquivo final inconsistente")
