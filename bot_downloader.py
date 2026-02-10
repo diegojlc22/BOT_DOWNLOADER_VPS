@@ -267,7 +267,10 @@ async def download_handler(client, message: Message, custom_name=None, url=None)
                     raise e
 
 
-        if total_size > 0 and os.path.exists(file_path) and os.path.getsize(file_path) == 0:
+        if not os.path.exists(file_path):
+            raise Exception("Erro crítico: O arquivo não foi salvo no disco.")
+
+        if total_size > 0 and os.path.getsize(file_path) == 0:
              raise Exception("Erro crítico: Arquivo vazio baixado.")
 
         if os.path.getsize(file_path) < total_size:
